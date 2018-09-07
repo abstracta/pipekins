@@ -1,0 +1,279 @@
+#!/usr/bin/env groovy
+
+@Grab('org.apache.commons:commons-exec:1.3')
+
+import groovy.text.SimpleTemplateEngine
+import org.apache.commons.exec.CommandLine
+
+/* 
+we use only one class for handling all pipeline structure (directives) and don't modularize into
+classes (eg: Stage, Option, PostExecution, etc) to avoid adding too much complexity (classes,
+methods, etc) even though current approach is not very clean (use some "global" variables which are
+modified by each directive)
+*/
+
+class LocalPiper {
+
+    def agent = null
+    def workspace = System.getProperty("user.dir")
+    def branchName = 'git rev-parse --abbrev-ref HEAD'.execute().text
+
+    def templateEngine = new SimpleTemplateEngine()
+    def env = ['HOME'       : System.getProperty("user.home"),
+               'WORKSPACE'  : workspace,
+               'HUDSON_HOME': workspace,
+               'JOB_NAME'   : "${new File(workspace).name}/$branchName",
+               'BRANCH_NAME': branchName]
+    def envOverrides = [:]
+    def includedStages = []
+    def isIncludedStage = false
+
+    def setEnvironment(env) {
+        this.envOverrides = env
+    }
+
+    def setIncludedStages(includedStages) {
+        this.includedStages = includedStages
+    }
+
+    def pipeline(Closure body) { body() }
+
+    def options(Closure body) { body() }
+
+    def timeout(Map props) {}
+
+    def timestamps() {}
+
+    def disableConcurrentBuilds() {}
+
+    def buildDiscarder(Object discarder) {}
+
+    def logRotator(Map props) {}
+
+    def triggers(Closure body) { body() }
+
+    def pollSCM(String chron) {}
+
+    def agent(Closure body) { body() }
+    def none = { agent = new NoneAgent() }
+    def any = { agent = new NoneAgent() }
+
+    def dockerfile(Closure body) { agent = new DockerfileAgent(); body() }
+
+    def dir(String dir) { agent.dir = dir }
+
+    def args(String args) { agent.args = templateEngine.createTemplate(args).make(env) }
+
+    def docker(Closure body) { agent = new DockerAgent(); body() }
+
+    def image(String image) { agent.image = image }
+
+    def stages(Closure body) { body() }
+
+    def parallel(Closure body) { body() }
+
+    def stage(String name, Closure body) {
+        def prevAgent = agent
+        def wasIncludedStage = isIncludedStage
+        isIncludedStage = !includedStages || includedStages.contains(name) || wasIncludedStage
+        println "Stage ${name}"
+        body()
+        isIncludedStage = wasIncludedStage
+        agent = prevAgent
+    }
+
+    def when(Closure body) { body() }
+
+    def not(Closure body) { body() }
+
+    def changeRequest() {}
+
+    def branch(String branch) {}
+
+    def environment(Closure body) {
+        body.resolveStrategy = Closure.DELEGATE_FIRST
+        body.delegate = agent.env
+        body()
+        agent.env.remove('out')
+        // we give more priority to user defined variables, over variables defined in jenkinsfile
+        agent.env += this.envOverrides
+    }
+
+    def credentials(String credentialsId) {}
+
+    def steps(Closure body) {
+        if (!isIncludedStage) {
+            return
+        }; agent.start(); try {
+            body()
+        } finally {
+            agent.stop()
+        }
+    }
+
+    def lock(String resourceName, Closure body) { body() }
+
+    def stash(Map props) {}
+
+    def unstash(String name) {}
+
+    def archiveArtifacts(String include) {}
+
+    def input(Closure body) { body() }
+
+    def message(String message) {}
+
+    def echo(String msg) { println msg }
+
+    def sh(String script) { agent.run(script) }
+
+    def post(Closure body) { body() }
+
+    def always(Closure body) {
+        if (!isIncludedStage) {
+            return
+        }; body()
+    }
+
+    def junit(String testResults) {}
+
+    class DockerfileAgent extends DockerAgent {
+
+        String dir
+
+        def start() {
+            image = 'pipekins'
+            Command.exec("docker build -t $image $dir")
+            super.start()
+        }
+
+    }
+
+    class DockerAgent extends NoneAgent {
+
+        String image
+        String args
+        def containerId
+
+        DockerAgent() {
+            env.remove('HOME')
+        }
+
+        def start() {
+            def commandBuilder = new StringBuilder("docker run -t -d -u 0:0 "
+                    + "-v '/var/run/docker.sock' "
+                    + "-v '$workspace:$workspace' "
+                    + "-w '$workspace' "
+                    + "$args ")
+            env.each { k, v -> commandBuilder += "-e '$k=$v' " }
+            commandBuilder += "$image cat"
+            def cmdLine = CommandLine.parse(commandBuilder)
+            containerId = Command.exec(cmdLine.toStrings())
+            containerId = containerId.substring(0, containerId.length() - 1)
+        }
+
+        def run(String script) {
+            def commandLine = "docker exec $containerId /bin/sh -c".split(' ') + [script]
+            Command.exec(commandLine as String[])
+        }
+
+        def stop() { Command.exec("docker rm -fv $containerId") }
+
+    }
+
+    class NoneAgent {
+
+        def env
+
+        NoneAgent() {
+            env = LocalPiper.this.env.clone()
+            env += envOverrides
+        }
+
+        def start() {}
+
+        def run(String script) { Command.exec(['/bin/bash', '-c', script], env) }
+
+        def stop() {}
+    }
+
+}
+
+class Command {
+
+    static def exec(String cmd) {
+        exec(cmd.split(' '))
+    }
+
+    static def exec(String[] cmd) {
+        exec(cmd, null)
+    }
+
+    static def exec(String[] cmd, Map<String, String> env) {
+        println "Executing: $cmd with env: $env"
+        def envArr = env?.collect { key, value -> "$key=$value" } as String[]
+        def p = cmd.execute(envArr, null)
+        def output = new StringBuilder()
+        p.waitForProcessOutput(new Appendable() {
+            Appendable append(char c) {
+                System.out.append(c)
+                output.append(c)
+            }
+
+            Appendable append(CharSequence csq) {
+                System.out.append(csq)
+                output.append(csq)
+            }
+
+            Appendable append(CharSequence csq, int start, int end) {
+                System.out.append(csq, start, end)
+                output.append(csq, start, end)
+            }
+
+        }, System.err)
+        def exitCode = p.exitValue()
+        if (exitCode) {
+            throw new IllegalStateException("Exit code: $exitCode")
+        }
+        output
+    }
+
+}
+
+def failWithMessage(cli, message) {
+    println msg
+    cli.usage()
+    System.exit(1)
+}
+
+def scriptName = this.getClass().simpleName
+def cli = new CliBuilder(usage: "$scriptName stages",
+        footer: """examples: 
+    ${scriptName} build test
+    """,
+        stopAtNonOption: true)
+cli.with {
+    h longOpt: 'help', 'Show usage information'
+    e longOpt: 'execution-variable', args: 1, argName: 'varName=varValue',
+            'Environment variable to use in the pipeline which overrides a pipeline defined ' +
+                    'environment variable'
+}
+def options = cli.parse(args)
+if (!options) {
+    failWithMessage(cli, 'Problem parsing options')
+}
+if (options.h) {
+    cli.usage()
+    System.exit(0)
+}
+
+def pipeline = new GroovyShell().parse(new File('Jenkinsfile'))
+pipeline.metaClass.mixin LocalPiper
+pipeline.setIncludedStages(options.arguments())
+if (options.es) {
+    pipeline.setEnvironment(options.es.collectEntries { v ->
+        def separatorPosition = v.indexOf('=')
+        [(v.substring(0, separatorPosition)): v.substring(separatorPosition + 1)]
+    })
+}
+pipeline.run()
