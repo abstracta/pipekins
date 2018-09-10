@@ -86,6 +86,12 @@ class LocalPiper {
 
     def not(Closure body) { body() }
 
+    def allOf(Closure body) { body() }
+
+    def anyOf(Closure body) { body() }
+
+    def buildingTag() {}
+
     def changeRequest() {}
 
     def branch(String branch) {}
