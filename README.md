@@ -2,6 +2,8 @@
 
 Simple Groovy script which allows to run declarative `Jenkinsfile`s in local machines, without the need to start [Jenkins](https://jenkins.io/).
 
+By using `pipekins` you can reuse what you have already configured in `Jenkinsfile` to run on `Jenkins` server to run some build steps locally, either to test locally some artifact and debug, or to trace some issue with build steps ran in `Jenkins`.
+
 The main difference between this script and other tools like [shmenkins](https://github.com/qorrect/shmenkins), [jenny](https://github.com/bmustiata/jenny) and [jenkinsfile-runner](https://github.com/jenkinsci/jenkinsfile-runner) is that it supports declarative pipelines and is very lightweight (compared to using jenkinsfile-runner which starts a Jenkins node).
 
 > **Note:**
