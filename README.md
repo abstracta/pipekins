@@ -20,7 +20,7 @@ The main difference between this script and other tools like [shmenkins](https:/
 
 ### Installation
 
-To be able to run the script from any location, copy it to a directory included in your OS `PATH` environment variable (e.g: `/usr/local/bin` in Mac OS).
+To be able to run the script from any location, copy it to a directory included in your OS `PATH` environment variable (e.g: `/usr/local/bin` in Mac OS) and give execution permissions to it (eg: `chmod +x pipekins`).
 
 ### Execution
 

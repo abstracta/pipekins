@@ -16,7 +16,7 @@ class LocalPiper {
 
     def agent = null
     def workspace = System.getProperty("user.dir")
-    def branchName = 'git rev-parse --abbrev-ref HEAD'.execute().text
+    def branchName = 'git rev-parse --abbrev-ref HEAD'.execute().text.trim()
 
     def templateEngine = new SimpleTemplateEngine()
     def env = ['HOME'       : System.getProperty("user.home"),
@@ -82,19 +82,7 @@ class LocalPiper {
         agent = prevAgent
     }
 
-    def when(Closure body) { body() }
-
-    def not(Closure body) { body() }
-
-    def allOf(Closure body) { body() }
-
-    def anyOf(Closure body) { body() }
-
-    def buildingTag() {}
-
-    def changeRequest() {}
-
-    def branch(String branch) {}
+    def when(Closure body) {}
 
     def environment(Closure body) {
         body.resolveStrategy = Closure.DELEGATE_FIRST
@@ -133,13 +121,7 @@ class LocalPiper {
 
     def sh(String script) { agent.run(script) }
 
-    def post(Closure body) { body() }
-
-    def always(Closure body) {
-        if (!isIncludedStage) {
-            return
-        }; body()
-    }
+    def post(Closure body) {  }
 
     def junit(String testResults) {}
 
@@ -166,15 +148,17 @@ class LocalPiper {
         }
 
         def start() {
-            def commandBuilder = new StringBuilder("docker run -t -d -u 0:0 "
-                    + "-v '/var/run/docker.sock' "
-                    + "-v '$workspace:$workspace' "
-                    + "-w '$workspace' "
-                    + "$args ")
-            env.each { k, v -> commandBuilder += "-e '$k=$v' " }
-            commandBuilder += "$image cat"
-            def cmdLine = CommandLine.parse(commandBuilder)
-            containerId = Command.exec(cmdLine.toStrings())
+            def commandArgs = ['docker','run','-t','-d','-u','0:0'
+                               ,'-v','/var/run/docker.sock'
+                               ,'-v',"$workspace:$workspace"
+                               ,'-w',"$workspace"]
+            if (args) {
+                commandArgs.addAll(CommandLine.parse(args).toStrings())
+            }
+            env.each { k, v -> commandArgs += ['-e',"$k=$v"] }
+            commandArgs += [image, 'cat']
+            println ">>$commandArgs<<"
+            containerId = Command.exec(commandArgs as String[])
             containerId = containerId.substring(0, containerId.length() - 1)
         }
 
