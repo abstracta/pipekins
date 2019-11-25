@@ -15,18 +15,20 @@ modified by each directive)
 class LocalPiper {
 
     def agent = null
-    def workspace = System.getProperty("user.dir")
+    def hostWorkspace = System.getProperty("user.dir")
+    def workspace = hostWorkspace ==~ /^\w:\/.*/ ? hostWorkspace.substring(2) : hostWorkspace
     def branchName = 'git rev-parse --abbrev-ref HEAD'.execute().text.trim()
 
     def templateEngine = new SimpleTemplateEngine()
     def env = ['HOME'       : System.getProperty("user.home"),
                'WORKSPACE'  : workspace,
                'HUDSON_HOME': workspace,
-               'JOB_NAME'   : "${new File(workspace).name}/$branchName",
+               'JOB_NAME'   : "${new File(hostWorkspace).name}/$branchName",
                'BRANCH_NAME': branchName]
     def envOverrides = [:]
     def includedStages = []
     def isIncludedStage = false
+    def stagePath = []
 
     def setEnvironment(env) {
         this.envOverrides = env
@@ -60,6 +62,8 @@ class LocalPiper {
 
     def dockerfile(Closure body) { agent = new DockerfileAgent(); body() }
 
+    def additionalBuildArgs(String args) { agent.additionalBuildArgs = args }
+
     def dir(String dir) { agent.dir = dir }
 
     def args(String args) { agent.args = templateEngine.createTemplate(args).make(env) }
@@ -76,13 +80,16 @@ class LocalPiper {
         def prevAgent = agent
         def wasIncludedStage = isIncludedStage
         isIncludedStage = !includedStages || includedStages.contains(name) || wasIncludedStage
-        println "Stage ${name}"
+        stagePath += name
         body()
+        stagePath.removeLast()
         isIncludedStage = wasIncludedStage
         agent = prevAgent
     }
 
     def when(Closure body) {}
+
+    def failFast(boolean fail) {}
 
     def environment(Closure body) {
         body.resolveStrategy = Closure.DELEGATE_FIRST
@@ -98,7 +105,10 @@ class LocalPiper {
     def steps(Closure body) {
         if (!isIncludedStage) {
             return
-        }; agent.start(); try {
+        }; 
+        println "Stage " + stagePath.join(">")
+        agent.start(); 
+        try {
             body()
         } finally {
             agent.stop()
@@ -128,10 +138,15 @@ class LocalPiper {
     class DockerfileAgent extends DockerAgent {
 
         String dir
+        String additionalBuildArgs
 
         def start() {
             image = 'pipekins'
-            Command.exec("docker build -t $image $dir")
+            def buildArgs = "-t $image"
+            if (additionalBuildArgs) {
+                buildArgs += " $additionalBuildArgs"
+            }
+            Command.exec("docker build $buildArgs $dir")
             super.start()
         }
 
@@ -150,7 +165,7 @@ class LocalPiper {
         def start() {
             def commandArgs = ['docker','run','-t','-d','-u','0:0'
                                ,'-v','/var/run/docker.sock'
-                               ,'-v',"$workspace:$workspace"
+                               ,'-v',"$hostWorkspace:$workspace"
                                ,'-w',"$workspace"]
             if (args) {
                 commandArgs.addAll(CommandLine.parse(args).toStrings())
