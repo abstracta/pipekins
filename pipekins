@@ -4,6 +4,7 @@
 
 import groovy.text.SimpleTemplateEngine
 import org.apache.commons.exec.CommandLine
+import groovy.cli.commons.CliBuilder
 
 /* 
 we use only one class for handling all pipeline structure (directives) and don't modularize into
@@ -15,15 +16,14 @@ modified by each directive)
 class LocalPiper {
 
     def agent = null
-    def hostWorkspace = System.getProperty("user.dir")
-    def workspace = hostWorkspace ==~ /^\w:\/.*/ ? hostWorkspace.substring(2) : hostWorkspace
+    def workspace = System.getProperty("user.dir")
     def branchName = 'git rev-parse --abbrev-ref HEAD'.execute().text.trim()
 
     def templateEngine = new SimpleTemplateEngine()
     def env = ['HOME'       : System.getProperty("user.home"),
                'WORKSPACE'  : workspace,
                'HUDSON_HOME': workspace,
-               'JOB_NAME'   : "${new File(hostWorkspace).name}/$branchName",
+               'JOB_NAME'   : "${new File(workspace).name}/$branchName",
                'BRANCH_NAME': branchName]
     def envOverrides = [:]
     def includedStages = []
@@ -165,7 +165,7 @@ class LocalPiper {
         def start() {
             def commandArgs = ['docker','run','-t','-d','-u','0:0'
                                ,'-v','/var/run/docker.sock'
-                               ,'-v',"$hostWorkspace:$workspace"
+                               ,'-v',"$workspace:$workspace"
                                ,'-w',"$workspace"]
             if (args) {
                 commandArgs.addAll(CommandLine.parse(args).toStrings())
@@ -245,7 +245,7 @@ class Command {
 
 }
 
-def failWithMessage(cli, message) {
+def failWithMessage(cli, msg) {
     println msg
     cli.usage()
     System.exit(1)
