@@ -15,7 +15,6 @@ modified by each directive)
 
 class LocalPiper {
 
-    def agent = null
     def workspace = System.getProperty("user.dir")
     def branchName = 'git rev-parse --abbrev-ref HEAD'.execute().text.trim()
 
@@ -25,13 +24,20 @@ class LocalPiper {
                'HUDSON_HOME': workspace,
                'JOB_NAME'   : "${new File(workspace).name}/$branchName",
                'BRANCH_NAME': branchName]
-    def envOverrides = [:]
+    def agent = new NoneAgent(env)
+    def userDefinedEnvironmentVariables = [:]
+    def userDefinedVolumes = [:]
     def includedStages = []
     def isIncludedStage = false
     def stagePath = []
+    def agentId = 1
 
-    def setEnvironment(env) {
-        this.envOverrides = env
+    def setEnvironmentVariables(env) {
+        this.userDefinedEnvironmentVariables = env
+    }
+
+    def setVolumes(volumes) {
+        this.userDefinedVolumes = volumes
     }
 
     def setIncludedStages(includedStages) {
@@ -57,10 +63,10 @@ class LocalPiper {
     def pollSCM(String chron) {}
 
     def agent(Closure body) { body() }
-    def none = { agent = new NoneAgent() }
-    def any = { agent = new NoneAgent() }
+    def none = { agent = new NoneAgent(agent.env) }
+    def any = { agent = new NoneAgent(agent.env) }
 
-    def dockerfile(Closure body) { agent = new DockerfileAgent(); body() }
+    def dockerfile(Closure body) { agent = new DockerfileAgent(agent.env); body() }
 
     def additionalBuildArgs(String args) { agent.additionalBuildArgs = args }
 
@@ -68,11 +74,23 @@ class LocalPiper {
 
     def args(String args) { agent.args = templateEngine.createTemplate(args).make(env) }
 
-    def docker(Closure body) { agent = new DockerAgent(); body() }
+    def docker(Closure body) { agent = new DockerAgent(agent.env); body() }
 
     def image(String image) { agent.image = image }
 
-    def stages(Closure body) { body() }
+    def stages(Closure body) { 
+        def managedAgent = !agent.running
+        if (managedAgent) {
+            agent.start(); 
+        }
+        try {
+            body()
+        } finally {
+            if (managedAgent) {
+                agent.stop()
+            }
+        }
+    }
 
     def parallel(Closure body) { body() }
 
@@ -95,9 +113,8 @@ class LocalPiper {
         body.resolveStrategy = Closure.DELEGATE_FIRST
         body.delegate = agent.env
         body()
+        // removing variable automatically added by delegate
         agent.env.remove('out')
-        // we give more priority to user defined variables, over variables defined in jenkinsfile
-        agent.env += this.envOverrides
     }
 
     def credentials(String credentialsId) {}
@@ -107,11 +124,16 @@ class LocalPiper {
             return
         }; 
         println "Stage " + stagePath.join(">")
-        agent.start(); 
+        def managedAgent = !agent.running
+        if (managedAgent) {
+            agent.start(); 
+        }
         try {
             body()
         } finally {
-            agent.stop()
+            if (managedAgent) {
+                agent.stop()
+            }
         }
     }
 
@@ -135,21 +157,26 @@ class LocalPiper {
 
     def junit(String testResults) {}
 
-    class DockerfileAgent extends DockerAgent {
+    class NoneAgent {
 
-        String dir
-        String additionalBuildArgs
+        def env
+        def running = true
 
-        def start() {
-            image = 'pipekins'
-            def buildArgs = "-t $image"
-            if (additionalBuildArgs) {
-                buildArgs += " $additionalBuildArgs"
-            }
-            Command.exec("docker build $buildArgs $dir")
-            super.start()
+        NoneAgent(env) {
+            this.env = env.clone()
         }
 
+        def start() {}
+
+        def buildEnvVars() {
+            // we give more priority to user defined variables, over variables defined in jenkinsfile, so we override any vars set
+            env + LocalPiper.this.userDefinedEnvironmentVariables
+        }
+
+        def run(String script) { 
+            Command.exec(['/bin/bash', '-c', script], buildEnvVars()) }
+
+        def stop() {}
     }
 
     class DockerAgent extends NoneAgent {
@@ -158,8 +185,10 @@ class LocalPiper {
         String args
         def containerId
 
-        DockerAgent() {
-            env.remove('HOME')
+        DockerAgent(env) {
+            super(env)
+            running = false
+            this.env.remove('HOME')
         }
 
         def start() {
@@ -167,14 +196,19 @@ class LocalPiper {
                                ,'-v','/var/run/docker.sock'
                                ,'-v',"$workspace:$workspace"
                                ,'-w',"$workspace"]
+            LocalPiper.this.userDefinedVolumes.each {
+                commandArgs.add('-v')
+                commandArgs.add(it)
+            }
             if (args) {
                 commandArgs.addAll(CommandLine.parse(args).toStrings())
             }
-            env.each { k, v -> commandArgs += ['-e',"$k=$v"] }
+            buildEnvVars().each { k, v -> commandArgs += ['-e',"$k=$v"] }
             commandArgs += [image, 'cat']
             println ">>$commandArgs<<"
             containerId = Command.exec(commandArgs as String[])
             containerId = containerId.substring(0, containerId.length() - 1)
+            running = true
         }
 
         def run(String script) {
@@ -182,24 +216,34 @@ class LocalPiper {
             Command.exec(commandLine as String[])
         }
 
-        def stop() { Command.exec("docker rm -fv $containerId") }
+        def stop() { 
+            Command.exec("docker rm -fv $containerId")
+            running = false
+        }
 
     }
 
-    class NoneAgent {
+    class DockerfileAgent extends DockerAgent {
 
-        def env
+        static int imageId = 0
 
-        NoneAgent() {
-            env = LocalPiper.this.env.clone()
-            env += envOverrides
+        String dir
+        String additionalBuildArgs
+
+        DockerfileAgent(env) {
+            super(env)
         }
 
-        def start() {}
+        def start() {
+            image = "pipekins-${imageId++}"
+            def buildArgs = "-t $image"
+            if (additionalBuildArgs) {
+                buildArgs += " $additionalBuildArgs"
+            }
+            Command.exec("docker build $buildArgs $dir")
+            super.start()
+        }
 
-        def run(String script) { Command.exec(['/bin/bash', '-c', script], env) }
-
-        def stop() {}
     }
 
 }
@@ -259,9 +303,11 @@ def cli = new CliBuilder(usage: "$scriptName stages",
         stopAtNonOption: true)
 cli.with {
     h longOpt: 'help', 'Show usage information'
-    e longOpt: 'execution-variable', args: 1, argName: 'varName=varValue',
+    e longOpt: 'environment-variable', args: 1, argName: 'varName=varValue',
             'Environment variable to use in the pipeline which overrides a pipeline defined ' +
                     'environment variable'
+    v longOpt: 'volume', args: 1, argName: 'hostPath:containerPath',
+            'Volume to mount in every docker image used'
 }
 def options = cli.parse(args)
 if (!options) {
@@ -276,9 +322,12 @@ def pipeline = new GroovyShell().parse(new File('Jenkinsfile'))
 pipeline.metaClass.mixin LocalPiper
 pipeline.setIncludedStages(options.arguments())
 if (options.es) {
-    pipeline.setEnvironment(options.es.collectEntries { v ->
+    pipeline.setEnvironmentVariables(options.es.collectEntries { v ->
         def separatorPosition = v.indexOf('=')
         [(v.substring(0, separatorPosition)): v.substring(separatorPosition + 1)]
     })
+}
+if (options.vs) {
+    pipeline.setVolumes(options.vs)
 }
 pipeline.run()
