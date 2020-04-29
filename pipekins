@@ -15,6 +15,7 @@ modified by each directive)
 class LocalPiper {
 
     def agent = null
+    def defaultAgent = null
     def hostWorkspace = System.getProperty("user.dir")
     def workspace = hostWorkspace ==~ /^\w:\/.*/ ? hostWorkspace.substring(2) : hostWorkspace
     def branchName = 'git rev-parse --abbrev-ref HEAD'.execute().text.trim()
@@ -38,7 +39,23 @@ class LocalPiper {
         this.includedStages = includedStages
     }
 
-    def pipeline(Closure body) { body() }
+    def pipeline(Closure body) {
+        try {
+            body();
+        }
+        finally {
+            if (defaultAgent) {
+                defaultAgent.stop()
+            }
+        }
+    }
+
+    def getCurrentAgent() {
+        if (agent instanceof NoneAgent) {
+            return agent
+        }
+        return defaultAgent
+    }
 
     def options(Closure body) { body() }
 
@@ -56,7 +73,12 @@ class LocalPiper {
 
     def pollSCM(String chron) {}
 
-    def agent(Closure body) { body() }
+    def agent(Closure body) {
+        body();
+        if (!defaultAgent) {
+            defaultAgent = agent;
+        }
+    }
     def none = { agent = new NoneAgent() }
     def any = { agent = new NoneAgent() }
 
@@ -77,14 +99,13 @@ class LocalPiper {
     def parallel(Closure body) { body() }
 
     def stage(String name, Closure body) {
-        def prevAgent = agent
         def wasIncludedStage = isIncludedStage
         isIncludedStage = !includedStages || includedStages.contains(name) || wasIncludedStage
         stagePath += name
         body()
         stagePath.removeLast()
         isIncludedStage = wasIncludedStage
-        agent = prevAgent
+        agent = null
     }
 
     def when(Closure body) {}
@@ -93,11 +114,12 @@ class LocalPiper {
 
     def environment(Closure body) {
         body.resolveStrategy = Closure.DELEGATE_FIRST
-        body.delegate = agent.env
+        def currentAgent = getCurrentAgent()
+        body.delegate = currentAgent.env
         body()
-        agent.env.remove('out')
+        currentAgent.env.remove('out')
         // we give more priority to user defined variables, over variables defined in jenkinsfile
-        agent.env += this.envOverrides
+        currentAgent.env += this.envOverrides
     }
 
     def credentials(String credentialsId) {}
@@ -105,13 +127,16 @@ class LocalPiper {
     def steps(Closure body) {
         if (!isIncludedStage) {
             return
-        }; 
+        };
         println "Stage " + stagePath.join(">")
-        agent.start(); 
+        def currentAgent = getCurrentAgent()
+        currentAgent.start()
         try {
             body()
         } finally {
-            agent.stop()
+            if (currentAgent != defaultAgent) {
+                currentAgent.stop()
+            }
         }
     }
 
@@ -129,9 +154,9 @@ class LocalPiper {
 
     def echo(String msg) { println msg }
 
-    def sh(String script) { agent.run(script) }
+    def sh(String script) { def currentAgent = getCurrentAgent(); currentAgent.run(script) }
 
-    def post(Closure body) {  }
+    def post(Closure body) {}
 
     def junit(String testResults) {}
 
@@ -163,23 +188,28 @@ class LocalPiper {
         }
 
         def start() {
-            def commandArgs = ['docker','run','-t','-d','-u','0:0'
-                               ,'-v','/var/run/docker.sock'
-                               ,'-v',"$hostWorkspace:$workspace"
-                               ,'-w',"$workspace"]
-            if (args) {
-                commandArgs.addAll(CommandLine.parse(args).toStrings())
+            if (!containerId) {
+                def commandArgs = ['docker', 'run', '-t', '-d', '-u', '0:0'
+                                   , '-v', '/var/run/docker.sock'
+                                   , '-v', "$hostWorkspace:$workspace"
+                                   , '-w', "$workspace"]
+                if (args) {
+                    commandArgs.addAll(CommandLine.parse(args).toStrings())
+                }
+//                env.each { k, v -> commandArgs += ['-e', "$k=$v"] }
+                commandArgs += [image, 'cat']
+                println ">>$commandArgs<<"
+                containerId = Command.exec(commandArgs as String[])
+                containerId = containerId.substring(0, containerId.length() - 1)
             }
-            env.each { k, v -> commandArgs += ['-e',"$k=$v"] }
-            commandArgs += [image, 'cat']
-            println ">>$commandArgs<<"
-            containerId = Command.exec(commandArgs as String[])
-            containerId = containerId.substring(0, containerId.length() - 1)
         }
 
         def run(String script) {
-            def commandLine = "docker exec $containerId /bin/sh -c".split(' ') + [script]
-            Command.exec(commandLine as String[])
+            def commandArgs = ["docker", "exec", containerId, "/bin/sh", "-c", script]
+            def envArgs = []
+            env.each { k, v -> envArgs += ['-e', "$k=$v"] }
+            commandArgs.addAll(2, envArgs)
+            Command.exec(commandArgs as String[])
         }
 
         def stop() { Command.exec("docker rm -fv $containerId") }
