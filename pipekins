@@ -196,7 +196,6 @@ class LocalPiper {
                 if (args) {
                     commandArgs.addAll(CommandLine.parse(args).toStrings())
                 }
-//                env.each { k, v -> commandArgs += ['-e', "$k=$v"] }
                 commandArgs += [image, 'cat']
                 println ">>$commandArgs<<"
                 containerId = Command.exec(commandArgs as String[])
