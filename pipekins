@@ -153,6 +153,10 @@ class LocalPiper {
 
     def sh(String script) { agent.run(script) }
 
+    def sh(Map args) { sh(args["script"]) }
+
+    def script(Closure body){ body() }
+
     def post(Closure body) {  }
 
     def junit(String testResults) {}
@@ -284,7 +288,7 @@ class Command {
         if (exitCode) {
             throw new IllegalStateException("Exit code: $exitCode")
         }
-        output
+        output.toString()
     }
 
 }
