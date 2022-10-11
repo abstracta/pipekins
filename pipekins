@@ -197,9 +197,17 @@ class LocalPiper {
 
         def start() {
             def commandArgs = ['docker','run','-t','-d','-u','0:0'
-                               ,'-v','/var/run/docker.sock'
-                               ,'-v',"$workspace:$workspace"
-                               ,'-w',"$workspace"]
+                               ,'-v','/var/run/docker.sock', '-v']
+            if (System.properties['os.name'].toLowerCase().contains('windows')) {
+                /*
+                Depending on docker image, we cant mix paths from windows (ex. c: or \) when running unix containers.
+                Current implementation will only apply for unix on unix and windows to unix bindings.
+                */
+                def unix_workspace = workspace[workspace.indexOf(":")+1..-1].replace("\\", "/")
+                commandArgs += ["$workspace:$unix_workspace",'-w',"$unix_workspace"]
+            } else {
+                commandArgs += ["$workspace:$workspace",'-w',"$workspace"]
+            }
             LocalPiper.this.userDefinedVolumes.each {
                 commandArgs.add('-v')
                 commandArgs.add(it)
